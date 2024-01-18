@@ -1,3 +1,4 @@
+import inspect
 import itertools
 import os
 import sys
@@ -132,6 +133,11 @@ _methods_marked_as_tasks_found: List[Tuple[Callable, Dict]] = []
 _found_as_set: Set[Tuple[str, str]] = set()
 
 
+def clear_previously_collected_tasks():
+    _methods_marked_as_tasks_found.clear()
+    _found_as_set.clear()
+
+
 def collect_tasks(
     path: Path, task_names: Sequence[str] = (), glob: Optional[str] = None
 ) -> Iterator[ITask]:
@@ -215,8 +221,10 @@ def collect_tasks(
             )
 
     for method, options in _methods_marked_as_tasks_found:
-        module = sys.modules[method.__module__]
-        task = Task(module, method, options=options)
+        module_name = method.__module__
+        module_file = method.__code__.co_filename
+
+        task = Task(module_name, module_file, method, options=options)
         if accept_task(task):
             yield task
 
