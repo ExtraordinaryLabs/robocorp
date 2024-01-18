@@ -4,7 +4,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from robocorp import log
 from robocorp.tasks._protocols import ITask
@@ -82,6 +82,9 @@ def import_path(
     path = path.absolute()
     root = root.absolute()
     module_name = module_name_from_path(path, root)
+    mod = sys.modules.get(module_name)
+    if mod is not None:
+        return mod
 
     for meta_importer in sys.meta_path:
         spec = meta_importer.find_spec(module_name, [str(path.parent)])
@@ -123,6 +126,12 @@ def _add_to_sys_path_0(root: Path):
             pass
 
 
+# These are the tasks found. They're kept in a global variable because when
+# doing multiple invocations of the main we want to consider those properly.
+_methods_marked_as_tasks_found: List[Tuple[Callable, Dict]] = []
+_found_as_set: Set[Tuple[str, str]] = set()
+
+
 def collect_tasks(
     path: Path, task_names: Sequence[str] = (), glob: Optional[str] = None
 ) -> Iterator[ITask]:
@@ -143,21 +152,18 @@ def collect_tasks(
 
         return task.name in task_names
 
-    methods_marked_as_tasks_found: List[Tuple[Callable, Dict]] = []
-    found_as_set = set()
-
     def on_func_found(func, options: Dict):
         from robocorp.tasks._exceptions import RobocorpTasksError
 
         key = (func.__code__.co_name, func.__code__.co_filename)
-        if key in found_as_set:
+        if key in _found_as_set:
             raise RobocorpTasksError(
                 f"Error: a task with the name '{func.__code__.co_name}' was "
                 + f"already found in: {func.__code__.co_filename}."
             )
-        found_as_set.add(key)
+        _found_as_set.add(key)
 
-        methods_marked_as_tasks_found.append(
+        _methods_marked_as_tasks_found.append(
             (
                 func,
                 options,
@@ -191,25 +197,12 @@ def collect_tasks(
                     ):
                         continue
 
-                    module = import_path(path_with_task, root=root)
-
-                    for method, options in methods_marked_as_tasks_found:
-                        task = Task(module, method, options=options)
-                        if accept_task(task):
-                            yield task
-
-                    del methods_marked_as_tasks_found[:]
+                    import_path(path_with_task, root=root)
 
         elif path.is_file():
             root = _get_root(path, is_dir=False)
             with _add_to_sys_path_0(root):
-                module = import_path(path, root=root)
-                for method, options in methods_marked_as_tasks_found:
-                    task = Task(module, method, options=options)
-                    if accept_task(task):
-                        yield task
-
-                del methods_marked_as_tasks_found[:]
+                import_path(path, root=root)
 
         else:
             from ._exceptions import RobocorpTasksCollectError
@@ -220,6 +213,12 @@ def collect_tasks(
             raise RobocorpTasksCollectError(
                 f"Expected {path} to map to a directory or file."
             )
+
+    for method, options in _methods_marked_as_tasks_found:
+        module = sys.modules[method.__module__]
+        task = Task(module, method, options=options)
+        if accept_task(task):
+            yield task
 
 
 def _get_root(path: Path, is_dir: bool) -> Path:
